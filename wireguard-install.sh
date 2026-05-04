@@ -199,7 +199,7 @@ EOF
 	cat << EOF > "$script_dir"/"$client".conf
 [Interface]
 Address = 10.7.0.$octet/24$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ", fddd:2c4:2c4:2c4::$octet/64")
-DNS = $dns
+DNS = $([[ -e /etc/unbound/wireguard-lan.conf ]] && echo "10.7.0.1" || echo "$dns")
 PrivateKey = $key
 
 [Peer]
@@ -209,6 +209,69 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = $(grep '^# ENDPOINT' /etc/wireguard/wg0.conf | cut -d " " -f 3):$(grep ListenPort /etc/wireguard/wg0.conf | cut -d " " -f 3)
 PersistentKeepalive = 25
 EOF
+}
+
+manage_lan_dns () {
+	echo
+	echo "Select an option:"
+	echo "   1) Add a .lan record"
+	echo "   2) Remove a .lan record"
+	echo "   3) List .lan records"
+	read -p "Option: " lan_option
+	until [[ "$lan_option" =~ ^[1-3]$ ]]; do
+		echo "$lan_option: invalid selection."
+		read -p "Option: " lan_option
+	done
+	case "$lan_option" in
+		1)
+			echo
+			read -p "Hostname (without .lan): " lan_host
+			until [[ -n "$lan_host" && "$lan_host" =~ ^[a-zA-Z0-9_-]+$ ]]; do
+				echo "$lan_host: invalid hostname."
+				read -p "Hostname (without .lan): " lan_host
+			done
+			read -p "IPv4 address: " lan_ip
+			until [[ "$lan_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; do
+				echo "$lan_ip: invalid address."
+				read -p "IPv4 address: " lan_ip
+			done
+			echo "local-data: \"$lan_host.lan. IN A $lan_ip\"" >> /etc/unbound/wireguard-lan.conf
+			systemctl restart unbound.service
+			echo
+			echo "$lan_host.lan added, pointing to $lan_ip."
+		;;
+		2)
+			number_of_records=$(grep -c '^local-data' /etc/unbound/wireguard-lan.conf 2>/dev/null || echo 0)
+			if [[ "$number_of_records" -eq 0 ]]; then
+				echo
+				echo "There are no .lan records!"
+				exit
+			fi
+			echo
+			echo "Select the record to remove:"
+			grep '^local-data' /etc/unbound/wireguard-lan.conf | sed 's/local-data: "//;s/\.lan\. IN A / -> /;s/"$//' | nl -s ') '
+			read -p "Record: " record_number
+			until [[ "$record_number" =~ ^[0-9]+$ && "$record_number" -le "$number_of_records" ]]; do
+				echo "$record_number: invalid selection."
+				read -p "Record: " record_number
+			done
+			line=$(grep -n '^local-data' /etc/unbound/wireguard-lan.conf | sed -n "${record_number}p" | cut -d: -f1)
+			sed -i "${line}d" /etc/unbound/wireguard-lan.conf
+			systemctl restart unbound.service
+			echo
+			echo "Record removed!"
+		;;
+		3)
+			echo
+			number_of_records=$(grep -c '^local-data' /etc/unbound/wireguard-lan.conf 2>/dev/null || echo 0)
+			if [[ "$number_of_records" -eq 0 ]]; then
+				echo "There are no .lan records configured."
+			else
+				echo "Current .lan DNS records:"
+				grep '^local-data' /etc/unbound/wireguard-lan.conf | sed 's/local-data: "//;s/\.lan\. IN A / -> /;s/"$//'
+			fi
+		;;
+	esac
 }
 
 if [[ ! -e /etc/wireguard/wg0.conf ]]; then
@@ -285,6 +348,16 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
 	[[ -z "$client" ]] && client="client"
 	echo
 	new_client_dns
+	echo
+	echo "Should a local DNS resolver (unbound) be set up for .lan names?"
+	read -p "Set up .lan DNS resolver? [Y/n]: " setup_unbound
+	until [[ "$setup_unbound" =~ ^[yYnN]*$ ]]; do
+		echo "$setup_unbound: invalid selection."
+		read -p "Set up .lan DNS resolver? [Y/n]: " setup_unbound
+	done
+	[[ -z "$setup_unbound" ]] && setup_unbound="y"
+	unbound_pkg=""
+	[[ "$setup_unbound" =~ ^[yY]$ ]] && unbound_pkg="unbound"
 	# Set up automatic updates for BoringTun if the user is fine with that
 	if [[ "$use_boringtun" -eq 1 ]]; then
 		echo
@@ -324,18 +397,18 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
 		if [[ "$os" == "ubuntu" ]]; then
 			# Ubuntu
 			apt-get update
-			apt-get install -y wireguard qrencode $firewall
+			apt-get install -y wireguard qrencode $firewall $unbound_pkg
 		elif [[ "$os" == "debian" ]]; then
 			# Debian
 			apt-get update
-			apt-get install -y wireguard qrencode $firewall
+			apt-get install -y wireguard qrencode $firewall $unbound_pkg
 		elif [[ "$os" == "centos" ]]; then
 			# CentOS
 			dnf install -y epel-release
-			dnf install -y wireguard-tools qrencode $firewall
+			dnf install -y wireguard-tools qrencode $firewall $unbound_pkg
 		elif [[ "$os" == "fedora" ]]; then
 			# Fedora
-			dnf install -y wireguard-tools qrencode $firewall
+			dnf install -y wireguard-tools qrencode $firewall $unbound_pkg
 			mkdir -p /etc/wireguard/
 		fi
 	# Else, BoringTun needs to be used
@@ -344,20 +417,20 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
 		if [[ "$os" == "ubuntu" ]]; then
 			# Ubuntu
 			apt-get update
-			apt-get install -y qrencode ca-certificates $cron $firewall
+			apt-get install -y qrencode ca-certificates $cron $firewall $unbound_pkg
 			apt-get install -y wireguard-tools --no-install-recommends
 		elif [[ "$os" == "debian" ]]; then
 			# Debian
 			apt-get update
-			apt-get install -y qrencode ca-certificates $cron $firewall
+			apt-get install -y qrencode ca-certificates $cron $firewall $unbound_pkg
 			apt-get install -y wireguard-tools --no-install-recommends
 		elif [[ "$os" == "centos" ]]; then
 			# CentOS
 			dnf install -y epel-release
-			dnf install -y wireguard-tools qrencode ca-certificates tar $cron $firewall
+			dnf install -y wireguard-tools qrencode ca-certificates tar $cron $firewall $unbound_pkg
 		elif [[ "$os" == "fedora" ]]; then
 			# Fedora
-			dnf install -y wireguard-tools qrencode ca-certificates tar $cron $firewall
+			dnf install -y wireguard-tools qrencode ca-certificates tar $cron $firewall $unbound_pkg
 			mkdir -p /etc/wireguard/
 		fi
 		# Grab the BoringTun binary using wget or curl and extract into the right place.
@@ -451,6 +524,35 @@ ExecStop=$ip6tables_path -w 5 -D FORWARD -m state --state RELATED,ESTABLISHED -j
 WantedBy=multi-user.target" >> /etc/systemd/system/wg-iptables.service
 		systemctl enable --now wg-iptables.service
 	fi
+	# Configure unbound as a local DNS resolver for .lan names
+	if [[ "$setup_unbound" =~ ^[yY]$ ]]; then
+		if [[ "$os" == "centos" || "$os" == "fedora" ]]; then
+			unbound_conf_dir="/etc/unbound/conf.d"
+		else
+			unbound_conf_dir="/etc/unbound/unbound.conf.d"
+		fi
+		mkdir -p "$unbound_conf_dir"
+		# Convert DNS servers to unbound forward-addr entries
+		forward_addrs=$(echo "$dns" | tr ',' '\n' | sed 's/^ *//' | grep -E '^[0-9]' | sed 's/.*/    forward-addr: &/')
+		cat << EOF > "$unbound_conf_dir"/wg0.conf
+server:
+    interface: 10.7.0.1
+    port: 53
+    do-daemonize: no
+    use-syslog: yes
+    verbosity: 1
+    access-control: 127.0.0.1 allow
+    access-control: 10.7.0.0/24 allow
+    local-zone: "lan." static
+    include: /etc/unbound/wireguard-lan.conf
+forward-zone:
+    name: "."
+$forward_addrs
+EOF
+		# Create the empty .lan records file (also serves as sentinel)
+		touch /etc/unbound/wireguard-lan.conf
+		systemctl enable --now unbound.service
+	fi
 	# Generates the custom client.conf
 	new_client_setup
 	# Enable and start the wg-quick service
@@ -504,13 +606,25 @@ else
 	echo "Select an option:"
 	echo "   1) Add a new client"
 	echo "   2) Remove an existing client"
-	echo "   3) Remove WireGuard"
-	echo "   4) Exit"
-	read -p "Option: " option
-	until [[ "$option" =~ ^[1-4]$ ]]; do
-		echo "$option: invalid selection."
+	if [[ -e /etc/unbound/wireguard-lan.conf ]]; then
+		echo "   3) Manage .lan DNS records"
+		echo "   4) Remove WireGuard"
+		echo "   5) Exit"
 		read -p "Option: " option
-	done
+		until [[ "$option" =~ ^[1-5]$ ]]; do
+			echo "$option: invalid selection."
+			read -p "Option: " option
+		done
+	else
+		echo "   3) Remove WireGuard"
+		echo "   4) Exit"
+		read -p "Option: " option
+		until [[ "$option" =~ ^[1-4]$ ]]; do
+			echo "$option: invalid selection."
+			read -p "Option: " option
+		done
+		[[ "$option" -ge 3 ]] && (( option++ ))
+	fi
 	case "$option" in
 		1)
 			echo
@@ -574,6 +688,10 @@ else
 			exit
 		;;
 		3)
+			manage_lan_dns
+			exit
+		;;
+		4)
 			echo
 			read -p "Confirm WireGuard removal? [y/N]: " remove
 			until [[ "$remove" =~ ^[yYnN]*$ ]]; do
@@ -645,6 +763,16 @@ else
 					fi
 					rm -f /usr/local/sbin/boringtun /usr/local/sbin/boringtun-upgrade
 				fi
+				# Remove unbound configuration if it was set up
+				if [[ -e /etc/unbound/wireguard-lan.conf ]]; then
+					if [[ "$os" == "centos" || "$os" == "fedora" ]]; then
+						rm -f /etc/unbound/conf.d/wg0.conf
+					else
+						rm -f /etc/unbound/unbound.conf.d/wg0.conf
+					fi
+					rm -f /etc/unbound/wireguard-lan.conf
+					systemctl try-restart unbound.service
+				fi
 				echo
 				echo "WireGuard removed!"
 			else
@@ -653,7 +781,7 @@ else
 			fi
 			exit
 		;;
-		4)
+		5)
 			exit
 		;;
 	esac
