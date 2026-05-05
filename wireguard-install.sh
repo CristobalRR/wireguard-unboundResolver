@@ -185,7 +185,12 @@ new_client_setup () {
 		exit
 	fi
 	key=$(wg genkey)
-	psk=$(wg genpsk)
+	psk=$(wg genpsk)### I want to run my own VPN but don't have a server for that
+You can get a VPS from just [2 EUR](https://alphavps.com/clients/aff.php?aff=474&pid=457&currency=1) or [2 USD](https://alphavps.com/clients/aff.php?aff=474&pid=457&currency=6) per month at [AlphaVPS](https://alphavps.com/clients/aff.php?aff=474&pid=457&currency=1).
+
+### Donations
+If you want to show your appreciation, you can donate via [PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VBAYDL34Z7J6L) or [cryptocurrency](https://pastebin.com/raw/M2JJpQpC). Thanks!
+
 	# Configure client in the server
 	cat << EOF >> /etc/wireguard/wg0.conf
 # BEGIN_PEER $client
@@ -215,10 +220,11 @@ manage_lan_dns () {
 	echo
 	echo "Select an option:"
 	echo "   1) Add a .lan record"
-	echo "   2) Remove a .lan record"
-	echo "   3) List .lan records"
+	echo "   2) Modify a .lan record"
+	echo "   3) Remove a .lan record"
+	echo "   4) List .lan records"
 	read -p "Option: " lan_option
-	until [[ "$lan_option" =~ ^[1-3]$ ]]; do
+	until [[ "$lan_option" =~ ^[1-4]$ ]]; do
 		echo "$lan_option: invalid selection."
 		read -p "Option: " lan_option
 	done
@@ -226,7 +232,7 @@ manage_lan_dns () {
 		1)
 			echo
 			read -p "Hostname (without .lan): " lan_host
-			until [[ -n "$lan_host" && "$lan_host" =~ ^[a-zA-Z0-9_-]+$ ]]; do
+			until [[ -n "$lan_host" && "$lan_host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; do
 				echo "$lan_host: invalid hostname."
 				read -p "Hostname (without .lan): " lan_host
 			done
@@ -248,6 +254,44 @@ manage_lan_dns () {
 				exit
 			fi
 			echo
+			echo "Select the record to modify:"
+			grep '^local-data' /etc/unbound/wireguard-lan.conf | sed 's/local-data: "//;s/\.lan\. IN A / -> /;s/"$//' | nl -s ') '
+			read -p "Record: " record_number
+			until [[ "$record_number" =~ ^[0-9]+$ && "$record_number" -le "$number_of_records" ]]; do
+				echo "$record_number: invalid selection."
+				read -p "Record: " record_number
+			done
+			current_host=$(grep '^local-data' /etc/unbound/wireguard-lan.conf | sed -n "${record_number}p" | grep -oE '"[^"]+\.lan\.' | tr -d '"' | sed 's/\.lan\.//')
+			current_ip=$(grep '^local-data' /etc/unbound/wireguard-lan.conf | sed -n "${record_number}p" | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+			echo
+			read -p "New hostname (without .lan) [$current_host]: " new_host
+			[[ -z "$new_host" ]] && new_host="$current_host"
+			until [[ "$new_host" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; do
+				echo "$new_host: invalid hostname."
+				read -p "New hostname (without .lan) [$current_host]: " new_host
+				[[ -z "$new_host" ]] && new_host="$current_host"
+			done
+			read -p "New IPv4 address [$current_ip]: " new_ip
+			[[ -z "$new_ip" ]] && new_ip="$current_ip"
+			until [[ "$new_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; do
+				echo "$new_ip: invalid address."
+				read -p "New IPv4 address [$current_ip]: " new_ip
+				[[ -z "$new_ip" ]] && new_ip="$current_ip"
+			done
+			line=$(grep -n '^local-data' /etc/unbound/wireguard-lan.conf | sed -n "${record_number}p" | cut -d: -f1)
+			sed -i "${line}s/.*/local-data: \"$new_host.lan. IN A $new_ip\"/" /etc/unbound/wireguard-lan.conf
+			systemctl restart unbound.service
+			echo
+			echo "$current_host.lan updated to $new_host.lan -> $new_ip."
+		;;
+		3)
+			number_of_records=$(grep -c '^local-data' /etc/unbound/wireguard-lan.conf 2>/dev/null || echo 0)
+			if [[ "$number_of_records" -eq 0 ]]; then
+				echo
+				echo "There are no .lan records!"
+				exit
+			fi
+			echo
 			echo "Select the record to remove:"
 			grep '^local-data' /etc/unbound/wireguard-lan.conf | sed 's/local-data: "//;s/\.lan\. IN A / -> /;s/"$//' | nl -s ') '
 			read -p "Record: " record_number
@@ -261,7 +305,7 @@ manage_lan_dns () {
 			echo
 			echo "Record removed!"
 		;;
-		3)
+		4)
 			echo
 			number_of_records=$(grep -c '^local-data' /etc/unbound/wireguard-lan.conf 2>/dev/null || echo 0)
 			if [[ "$number_of_records" -eq 0 ]]; then
