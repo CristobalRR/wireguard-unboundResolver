@@ -172,6 +172,19 @@ new_client_dns () {
 	esac
 }
 
+new_client_tunnel () {
+	echo
+	echo "Select the tunnel mode for the client:"
+	echo "   1) Split tunnel (only VPN subnet traffic routed through VPN)"
+	echo "   2) Full tunnel (all traffic routed through VPN)"
+	read -p "Tunnel mode [1]: " tunnel_mode
+	until [[ -z "$tunnel_mode" || "$tunnel_mode" =~ ^[12]$ ]]; do
+		echo "$tunnel_mode: invalid selection."
+		read -p "Tunnel mode [1]: " tunnel_mode
+	done
+	[[ -z "$tunnel_mode" ]] && tunnel_mode="1"
+}
+
 new_client_setup () {
 	# Find the next available IP in the 10.7.0.0/16 range.
 	# Server is at 10.7.0.1; clients start at 10.7.0.2.
@@ -193,6 +206,12 @@ new_client_setup () {
 	psk=$(wg genpsk)
 	# Compute a unique IPv6 host suffix from both octets
 	ip6_suffix=$(( octet3 * 256 + octet4 ))
+	# Set AllowedIPs based on tunnel mode (1 = split, 2 = full)
+	if [[ "$tunnel_mode" == "2" ]]; then
+		client_allowed_ips="0.0.0.0/0, ::/0"
+	else
+		client_allowed_ips="10.7.0.0/16$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ', fddd:2c4:2c4:2c4::/64')"
+	fi
 
 	# Configure client in the server
 	cat << EOF >> /etc/wireguard/wg0.conf
@@ -213,7 +232,7 @@ PrivateKey = $key
 [Peer]
 PublicKey = $(grep PrivateKey /etc/wireguard/wg0.conf | cut -d " " -f 3 | wg pubkey)
 PresharedKey = $psk
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = $client_allowed_ips
 Endpoint = $(grep '^# ENDPOINT' /etc/wireguard/wg0.conf | cut -d " " -f 3):$(grep ListenPort /etc/wireguard/wg0.conf | cut -d " " -f 3)
 PersistentKeepalive = 25
 EOF
@@ -395,6 +414,7 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
 	[[ -z "$client" ]] && client="client"
 	echo
 	new_client_dns
+	new_client_tunnel
 	echo
 	echo "Should a local DNS resolver (unbound) be set up for .lan names?"
 	read -p "Set up .lan DNS resolver? [Y/n]: " setup_unbound
@@ -686,6 +706,7 @@ else
 			done
 			echo
 			new_client_dns
+			new_client_tunnel
 			new_client_setup
 			# Append new client configuration to the WireGuard interface
 			wg addconf wg0 <(sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" /etc/wireguard/wg0.conf)
