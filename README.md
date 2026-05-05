@@ -1,6 +1,8 @@
 Fork From Tyr's https://github.com/Nyr/wireguard-install
-added options to manage .lan TLD records with unbound.
+Split tunnel and added options to manage .lan TLD records with unbound.
+extended to /16 size network.
 
+soon i will add a frontend to manage things more easily.
 
 ## wireguard-install
 WireGuard [road warrior](http://en.wikipedia.org/wiki/Road_warrior_%28computing%29) installer for Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora.
